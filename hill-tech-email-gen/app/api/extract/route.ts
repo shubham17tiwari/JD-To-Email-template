@@ -1,217 +1,237 @@
-import Anthropic from '@anthropic-ai/sdk'
-import { NextResponse } from 'next/server'
+import { NextRequest, NextResponse } from 'next/server'
+import OpenAI from 'openai'
+import { EXTRACTION_SYSTEM_PROMPT, buildUserPrompt } from '@/lib/extractionPrompt'
+import { normalizeJobTitle } from '@/lib/titleNormalizer'
 
-import { buildUserPrompt, EXTRACTION_SYSTEM_PROMPT } from '@/lib/extractionPrompt'
+const PRIMARY_EXTRACTION_MODEL =
+  process.env.DEEPSEEK_EXTRACTION_MODEL?.trim() || 'deepseek-chat'
+const FALLBACK_EXTRACTION_MODELS = ['deepseek-chat']
+const RETRIABLE_HTTP_CODES = new Set([429, 500, 502, 503, 504])
 
-type ExtractRequestBody = {
-  base64?: string
-  filename?: string
-  text?: string
-}
-
-function methodNotAllowed(): NextResponse {
-  return NextResponse.json({ error: 'Method not allowed' }, { status: 405 })
-}
-
-function parseModelJson(text: string): unknown {
-  const cleaned = text.replace(/```json\s*/gi, '').replace(/```/g, '').trim()
-  return JSON.parse(cleaned)
-}
-
-function isAnthropicKey(key: string): boolean {
-  return key.startsWith('sk-ant-')
-}
-
-function isOpenAIKey(key: string): boolean {
-  return key.startsWith('sk-proj-') || (key.startsWith('sk-') && !key.startsWith('sk-ant-'))
-}
-
-function getProviderConfig():
-  | { provider: 'anthropic'; apiKey: string }
-  | { provider: 'openai'; apiKey: string }
-  | null {
-  const anthropicKey = process.env.ANTHROPIC_API_KEY?.trim()
-  const openaiKey = process.env.OPENAI_API_KEY?.trim()
-
-  if (openaiKey) {
-    return { provider: 'openai', apiKey: openaiKey }
+// ---------------------------------------------------------------------------
+// PDF text extraction (server-side fallback)
+// ---------------------------------------------------------------------------
+async function extractTextFromBase64Pdf(base64: string): Promise<string> {
+  const binaryString = atob(base64)
+  const bytes = new Uint8Array(binaryString.length)
+  for (let i = 0; i < binaryString.length; i += 1) {
+    bytes[i] = binaryString.charCodeAt(i)
   }
 
-  if (!anthropicKey) {
-    return null
+  const pdfjsLib = await import('pdfjs-dist')
+  pdfjsLib.GlobalWorkerOptions.workerSrc =
+    'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/5.6.205/pdf.worker.min.mjs'
+
+  const loadingTask = pdfjsLib.getDocument({ data: bytes })
+  const pdf = await loadingTask.promise
+
+  const pages: string[] = []
+  for (let pageNum = 1; pageNum <= pdf.numPages; pageNum += 1) {
+    const page = await pdf.getPage(pageNum)
+    const textContent = await page.getTextContent()
+    const pageText = textContent.items
+      .map((item) => ('str' in item && typeof item.str === 'string' ? item.str : ''))
+      .filter((s: string) => s.trim().length > 0)
+      .join('\n')
+    pages.push(pageText)
   }
 
-  if (isAnthropicKey(anthropicKey)) {
-    return { provider: 'anthropic', apiKey: anthropicKey }
-  }
-
-  if (isOpenAIKey(anthropicKey)) {
-    return { provider: 'openai', apiKey: anthropicKey }
-  }
-
-  return null
+  return pages.join('\n\n')
 }
 
-async function runAnthropicExtraction(base64: string, apiKey: string): Promise<string> {
-  const client = new Anthropic({ apiKey })
+// ---------------------------------------------------------------------------
+// DeepSeek client
+// ---------------------------------------------------------------------------
+function getAiClient(): OpenAI | null {
+  const apiKey = process.env.DEEPSEEK_API_KEY?.trim()
+  if (!apiKey) return null
+  return new OpenAI({
+    apiKey,
+    baseURL: 'https://api.deepseek.com',
+  })
+}
 
-  const data = await client.messages.create({
-    model: 'claude-sonnet-4-20250514',
-    max_tokens: 2000,
-    system: EXTRACTION_SYSTEM_PROMPT,
-    messages: [
-      {
-        role: 'user',
-        content: [
-          {
-            type: 'document',
-            source: {
-              type: 'base64',
-              media_type: 'application/pdf',
-              data: base64,
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+type ApiErrorInfo = {
+  status?: number
+  message?: string
+}
+
+function parseApiError(err: unknown): ApiErrorInfo {
+  if (
+    err instanceof Error &&
+    'status' in err &&
+    typeof (err as { status: unknown }).status === 'number'
+  ) {
+    return {
+      status: (err as { status: number }).status,
+      message: err.message,
+    }
+  }
+  if (err instanceof Error) {
+    return { message: err.message }
+  }
+  return {}
+}
+
+function isRetriableError(err: unknown): boolean {
+  const info = parseApiError(err)
+  return Boolean(info.status && RETRIABLE_HTTP_CODES.has(info.status))
+}
+
+function getExtractionModels(): string[] {
+  const models = [PRIMARY_EXTRACTION_MODEL, ...FALLBACK_EXTRACTION_MODELS]
+  return [...new Set(models.map((m) => m.trim()).filter(Boolean))]
+}
+
+function adjustExtractedRate(rawRate: unknown): string {
+  if (typeof rawRate !== 'string') return ''
+  const trimmed = rawRate.trim()
+  if (!trimmed) return ''
+  const match = trimmed.match(/-?\d+(?:\.\d+)?/)
+  if (!match) return ''
+  const parsed = Number.parseFloat(match[0])
+  if (!Number.isFinite(parsed)) return ''
+  const adjusted = parsed - 17
+  return Number.isInteger(adjusted)
+    ? adjusted.toString()
+    : adjusted.toFixed(2).replace(/\.0+$/, '').replace(/(\.\d*?)0+$/, '$1')
+}
+
+// ---------------------------------------------------------------------------
+// Extraction
+// ---------------------------------------------------------------------------
+async function generateExtraction(
+  client: OpenAI,
+  pdfText: string,
+): Promise<string> {
+  const models = getExtractionModels()
+  let lastError: unknown
+
+  for (const model of models) {
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      try {
+        const completion = await client.chat.completions.create({
+          model,
+          messages: [
+            { role: 'system', content: EXTRACTION_SYSTEM_PROMPT },
+            {
+              role: 'user',
+              content: `Here is the text extracted from a job requisition PDF:\n\n${pdfText}\n\n${buildUserPrompt()}`,
             },
-          },
-          {
-            type: 'text',
-            text: buildUserPrompt(),
-          },
-        ],
-      },
-    ],
-  })
+          ],
+          temperature: 0.1,
+          max_tokens: 4096,
+        })
 
-  return data.content
-    .filter((block) => block.type === 'text')
-    .map((block) => block.text)
-    .join('\n')
-}
-
-async function runOpenAIExtraction(text: string, apiKey: string): Promise<string> {
-  const response = await fetch('https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      model: process.env.OPENAI_MODEL || 'gpt-4.1-mini',
-      temperature: 0,
-      messages: [
-        {
-          role: 'system',
-          content: EXTRACTION_SYSTEM_PROMPT,
-        },
-        {
-          role: 'user',
-          content: `${buildUserPrompt()}\n\nDocument text:\n${text}`,
-        },
-      ],
-    }),
-  })
-
-  const payload = (await response.json()) as {
-    choices?: Array<{
-      message?: {
-        content?: string
+        const content = completion.choices[0]?.message?.content
+        if (content) return content
+        lastError = new Error('DeepSeek returned an empty response')
+      } catch (err) {
+        lastError = err
+        if (attempt < 3 && isRetriableError(err)) {
+          await sleep(500 * attempt)
+          continue
+        }
+        break
       }
-    }>
-    error?: {
-      message?: string
     }
   }
 
-  if (!response.ok) {
-    const message = payload?.error?.message || `OpenAI API error (${response.status})`
-    throw new Error(message)
-  }
-
-  const content = payload?.choices?.[0]?.message?.content
-  if (!content) {
-    throw new Error('OpenAI response did not include text content.')
-  }
-
-  return content
+  throw lastError ?? new Error('DeepSeek extraction failed')
 }
 
-export async function POST(request: Request): Promise<NextResponse> {
-  const timestamp = new Date().toISOString()
-  let filename = 'unknown'
-
+// ---------------------------------------------------------------------------
+// Route handler
+// ---------------------------------------------------------------------------
+export async function POST(req: NextRequest): Promise<NextResponse> {
   try {
-    const config = getProviderConfig()
-    if (!config) {
-      console.error(`[extract] failure filename=unknown timestamp=${timestamp} reason=missing_api_key`)
+    const client = getAiClient()
+    if (!client) {
       return NextResponse.json(
-        {
-          error:
-            'Server is missing a valid API key. Set OPENAI_API_KEY or ANTHROPIC_API_KEY.',
-        },
+        { error: 'DEEPSEEK_API_KEY environment variable is not set' },
         { status: 500 },
       )
     }
 
-    const body = (await request.json()) as ExtractRequestBody
-    const base64 = body.base64?.trim()
-    const text = body.text?.trim()
-    filename = body.filename?.trim() || 'unknown'
+    const body = await req.json()
 
-    if (!base64) {
-      console.error(`[extract] failure filename=${filename} timestamp=${timestamp} reason=missing_base64`)
-      return NextResponse.json({ error: 'base64 is required' }, { status: 400 })
-    }
-
-    if (config.provider === 'openai' && !text) {
-      console.error(`[extract] failure filename=${filename} timestamp=${timestamp} reason=missing_text`)
+    if (!body.base64 && !body.text) {
       return NextResponse.json(
-        { error: 'text is required for OpenAI extraction' },
+        { error: 'base64 or text is required' },
         { status: 400 },
       )
     }
 
-    const responseText =
-      config.provider === 'openai'
-        ? await runOpenAIExtraction(text || '', config.apiKey)
-        : await runAnthropicExtraction(base64, config.apiKey)
-
-    let parsed: unknown
-    try {
-      parsed = parseModelJson(responseText)
-    } catch {
-      console.error(`[extract] failure filename=${filename} timestamp=${timestamp} reason=invalid_json`)
-      return NextResponse.json({ error: 'Model response was not valid JSON' }, { status: 500 })
+    const { base64, text, filename = 'unknown.pdf' } = body as {
+      base64?: string
+      text?: string
+      filename?: string
     }
 
-    console.info(
-      `[extract] success filename=${filename} timestamp=${timestamp} provider=${config.provider}`,
+    // Prefer client-extracted text; fall back to server-side extraction
+    const pdfText: string =
+      text?.trim() || (base64 ? await extractTextFromBase64Pdf(base64) : '')
+
+    if (!pdfText.trim()) {
+      return NextResponse.json(
+        { error: 'Could not extract text from the provided PDF' },
+        { status: 400 },
+      )
+    }
+
+    const responseText = await generateExtraction(client, pdfText)
+    const clean = responseText.replace(/```json|```/g, '').trim()
+
+    let parsed: Record<string, unknown>
+    try {
+      parsed = JSON.parse(clean)
+    } catch {
+      return NextResponse.json(
+        { error: 'DeepSeek response was not valid JSON' },
+        { status: 500 },
+      )
+    }
+
+    parsed.contract_length = '24 months+'
+    parsed.rate = adjustExtractedRate(parsed.rate)
+
+    const apiKey = process.env.DEEPSEEK_API_KEY || ''
+    parsed.position_title_display = await normalizeJobTitle(
+      (parsed.position_title as string) || '',
+      (parsed.position_description as string) || '',
+      apiKey,
+    )
+
+    console.log(
+      `[extract] ${filename} — success at ${new Date().toISOString()}`,
     )
     return NextResponse.json(parsed, { status: 200 })
-  } catch (error) {
-    const message = error instanceof Error ? error.message : 'Unknown API error'
-    console.error(`[extract] failure filename=${filename} timestamp=${timestamp} reason=${message}`)
-    return NextResponse.json({ error: message }, { status: 500 })
+  } catch (err) {
+    const info = parseApiError(err)
+    const message =
+      info.message || (err instanceof Error ? err.message : 'Unknown error')
+    const status =
+      info.status && info.status >= 400 && info.status <= 599
+        ? info.status
+        : 500
+
+    console.error('[extract] Error:', {
+      status,
+      providerStatus: info.status,
+      message,
+    })
+
+    return NextResponse.json({ error: message }, { status })
   }
 }
 
 export async function GET(): Promise<NextResponse> {
-  return methodNotAllowed()
-}
-
-export async function PUT(): Promise<NextResponse> {
-  return methodNotAllowed()
-}
-
-export async function PATCH(): Promise<NextResponse> {
-  return methodNotAllowed()
-}
-
-export async function DELETE(): Promise<NextResponse> {
-  return methodNotAllowed()
-}
-
-export async function OPTIONS(): Promise<NextResponse> {
-  return methodNotAllowed()
-}
-
-export async function HEAD(): Promise<NextResponse> {
-  return methodNotAllowed()
+  return NextResponse.json({ error: 'Method not allowed' }, { status: 405 })
 }

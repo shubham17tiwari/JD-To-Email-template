@@ -1,5 +1,20 @@
 This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
 
+## DeepSeek Setup
+
+1. Create your local env file from the template:
+```bash
+cp .env.example .env.local
+```
+
+2. Open `.env.local` and set your DeepSeek API key in `DEEPSEEK_API_KEY`.
+
+3. Keep these model defaults unless you want to override them:
+```env
+DEEPSEEK_EXTRACTION_MODEL=deepseek-chat
+DEEPSEEK_TITLE_MODEL=deepseek-chat
+```
+
 ## Getting Started
 
 First, run the development server:

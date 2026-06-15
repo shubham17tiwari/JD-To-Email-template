@@ -4,12 +4,15 @@ import { buildPlainTextEmail } from './plainTextEmailBuilder'
 
 export type CopyResult = { method: 'html' | 'plaintext'; message: string }
 
+export async function copySubjectToClipboard(subject: string): Promise<void> {
+  await navigator.clipboard.writeText(subject)
+}
+
 export async function copyEmailToClipboard(
   fields: RequisitionFields,
-  subject: string,
 ): Promise<CopyResult> {
-  const htmlContent = `<p><strong>Subject: ${subject}</strong></p><br>${buildHtmlEmail(fields)}`
-  const plainContent = `Subject: ${subject}\n\n${buildPlainTextEmail(fields)}`
+  const htmlContent = buildHtmlEmail(fields)
+  const plainContent = buildPlainTextEmail(fields)
 
   try {
     const item = new ClipboardItem({
@@ -20,12 +23,12 @@ export async function copyEmailToClipboard(
     await navigator.clipboard.write([item])
     return {
       method: 'html',
-      message: 'Copied with formatting — paste into Gmail or Outlook.',
+      message: 'Copied formatted email — paste into Gmail or Outlook.',
     }
   } catch {
     try {
       await navigator.clipboard.writeText(plainContent)
-      return { method: 'plaintext', message: 'Copied as plain text.' }
+      return { method: 'plaintext', message: 'Copied email body as plain text.' }
     } catch {
       throw new Error('Copy failed — please select the email and copy manually.')
     }
@@ -34,8 +37,7 @@ export async function copyEmailToClipboard(
 
 export async function copyPlainText(
   fields: RequisitionFields,
-  subject: string,
 ): Promise<void> {
-  const plainContent = `Subject: ${subject}\n\n${buildPlainTextEmail(fields)}`
+  const plainContent = buildPlainTextEmail(fields)
   await navigator.clipboard.writeText(plainContent)
 }

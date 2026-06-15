@@ -1,6 +1,17 @@
+export interface SkillItem {
+  /** The requirement description shown in the left column */
+  skill: string
+  /** "Required" | "Highly desired" | "Desired" */
+  level: 'Required' | 'Highly desired' | 'Desired'
+  /** Experience in years, e.g. "2 Years" — empty string when not specified */
+  years: string
+}
+
 export interface RequisitionFields {
   /** Position title extracted from the requisition. */
   position_title: string
+  /** Display-friendly title after AI normalization */
+  position_title_display?: string
   /** Requisition or job ID identifier. */
   req_id: string
   /** Agency or client organization name. */
@@ -25,8 +36,8 @@ export interface RequisitionFields {
   position_description: string
   /** Concise duty bullet points. */
   duties: string[]
-  /** Candidate-facing requirement checklist items. */
-  skills_checklist: string[]
+  /** Structured skill rows for the Skills Matrix table */
+  skills_checklist: SkillItem[]
   /** Missing or ambiguous field warnings flagged by AI. */
   warnings: string[]
 }

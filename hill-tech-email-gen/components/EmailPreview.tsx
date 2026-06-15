@@ -3,7 +3,7 @@
 import { useRef, useState } from 'react'
 
 import type { RequisitionFields } from '@/lib/types'
-import { copyEmailToClipboard, copyPlainText } from '@/lib/clipboardService'
+import { copyEmailToClipboard, copyPlainText, copySubjectToClipboard } from '@/lib/clipboardService'
 import { buildHtmlEmail } from '@/lib/htmlEmailBuilder'
 
 interface Props {
@@ -16,7 +16,8 @@ export default function EmailPreview({ fields, onEdit }: Props) {
   const [copyError, setCopyError] = useState<boolean>(false)
   const clearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  const subject = `Seeking a ${fields.position_title || '[POSITION TITLE]'} — Immediate Opening`
+  const title   = fields.position_title_display || fields.position_title || '[POSITION TITLE]'
+  const subject = `Seeking a ${title} — Immediate Opening`
   const htmlContent = buildHtmlEmail(fields)
 
   const setTimedMessage = (message: string, isError: boolean): void => {
@@ -34,9 +35,18 @@ export default function EmailPreview({ fields, onEdit }: Props) {
     }, 2500)
   }
 
+  const handleCopySubject = async (): Promise<void> => {
+    try {
+      await copySubjectToClipboard(subject)
+      setTimedMessage('Subject copied!', false)
+    } catch {
+      setTimedMessage('Copy failed — select and copy manually.', true)
+    }
+  }
+
   const handleCopyPlainText = async (): Promise<void> => {
     try {
-      await copyPlainText(fields, subject)
+      await copyPlainText(fields)
       setTimedMessage('Copied as plain text!', false)
     } catch {
       setTimedMessage('Copy failed — select and copy manually.', true)
@@ -45,7 +55,7 @@ export default function EmailPreview({ fields, onEdit }: Props) {
 
   const handleCopyFormatted = async (): Promise<void> => {
     try {
-      const result = await copyEmailToClipboard(fields, subject)
+      const result = await copyEmailToClipboard(fields)
       setTimedMessage(result.message, false)
     } catch {
       setTimedMessage('Copy failed — select and copy manually.', true)
@@ -94,9 +104,18 @@ export default function EmailPreview({ fields, onEdit }: Props) {
         </span>
       </div>
 
-      <div className="bg-gray-50 border border-b-0 border-gray-200 rounded-t-xl px-5 py-3">
-        <span className="text-xs font-semibold text-gray-500 mr-3">SUBJECT</span>
-        <span className="text-sm text-gray-800">{subject}</span>
+      <div className="bg-gray-50 border border-b-0 border-gray-200 rounded-t-xl px-5 py-3 flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <span className="text-xs font-semibold text-gray-500 mr-2">SUBJECT</span>
+          <span className="text-sm text-gray-800 break-words">{subject}</span>
+        </div>
+        <button
+          type="button"
+          onClick={handleCopySubject}
+          className="shrink-0 border border-gray-300 rounded-md px-3 py-1 text-xs hover:bg-white transition-colors"
+        >
+          Copy subject
+        </button>
       </div>
 
       <div className="bg-white border border-gray-200 rounded-b-xl p-6 overflow-y-auto" style={{ maxHeight: 580 }}>

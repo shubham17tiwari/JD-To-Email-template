@@ -32,8 +32,32 @@ export default function FieldEditor({ fields, onChange, warnings }: Props) {
       .split('\n')
       .map((line) => line.trim())
       .filter((line) => line.length > 0)
+      .map((line) => {
+        const parts = line.split('|').map((p) => p.trim())
+        const skill = parts[0] || ''
+        const levelRaw = (parts[1] || 'Required').trim()
+        const level =
+          levelRaw.toLowerCase().includes('highly desired') || levelRaw.toLowerCase().includes('highly')
+            ? 'Highly desired'
+            : levelRaw.toLowerCase().includes('desired')
+              ? 'Desired'
+              : 'Required'
+        const years = parts[2] || ''
+        return { skill, level, years } as { skill: string; level: 'Required' | 'Highly desired' | 'Desired'; years: string }
+      })
     updateField('skills_checklist', skills)
   }
+
+  // Format SkillItem[] back to textarea-friendly strings
+  const skillsText = fields.skills_checklist
+    .map((item) => {
+      if (typeof item === 'string') {
+        // backward compatibility with old string[] data
+        return item + ' | Required | '
+      }
+      return `${item.skill} | ${item.level} | ${item.years || ''}`
+    })
+    .join('\n')
 
   return (
     <div>
@@ -189,11 +213,11 @@ export default function FieldEditor({ fields, onChange, warnings }: Props) {
               id="skills_checklist"
               className={`${INPUT_CLASSES} resize-y`}
               rows={10}
-              value={fields.skills_checklist.join('\n')}
+              value={skillsText}
               onChange={(event) => handleSkillsChange(event.target.value)}
             />
             <p className="text-xs text-gray-400 mt-1">
-              One skill per line — each becomes a checkbox item in the email
+              Format: <strong>Skill | Level | Years</strong> — one per line (e.g. "Java Developer | Required | 5 Years")
             </p>
           </div>
         </div>

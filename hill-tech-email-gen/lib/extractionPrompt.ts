@@ -18,10 +18,22 @@ CONTRACT LENGTH:
   - If neither date is present, return ""
   - Never invent or assume a contract length
 
-POSITION DESCRIPTION:
-  - Write a clean 3 to 5 sentence summary in plain English
-  - Do not copy-paste verbatim from the document
-  - Remove system headings, vendor portal labels, and formatting noise
+POSITION DESCRIPTION — CRITICAL:
+  - Copy the COMPLETE description text word for word — do NOT summarize, do NOT shorten
+  - The email already has a "Position Description:" heading, so the description text
+    should start directly with the overview paragraph — do NOT add a redundant
+    "## Position Overview" or similar first heading
+  - For structure, format like this:
+      The opening summary/overview paragraph → keep as plain text (no ## prefix)
+      Later section headers like "Key Responsibilities", "Required Experience & Skills",
+      "Preferred Qualifications", "Work Conditions" → prefix with ##
+      Bullet point items (lines starting with *, -, or •) → prefix with "• "
+      Use a blank line between sections and paragraphs
+  - Remove ONLY these artifacts:
+      Page headers with dates/URLs (e.g. "4/12/26, 8:31 PM District of Columbia")
+      Vendor portal labels like "Complete Description:" or "Requisition Details"
+      System navigation text, page numbers
+  - Preserve ALL original wording, ALL requirements, ALL details exactly
 
 DUTIES:
   - Extract all major duty areas as concise bullet strings
@@ -29,10 +41,16 @@ DUTIES:
   - Group closely related sub-tasks under one bullet
   - Remove redundant or repeated items
 
-SKILLS CHECKLIST:
-  - Extract all Required and Highly Desired skills
-  - Format each as a clean, plain-English candidate-facing requirement
-  - Do not include vague or duplicate items
+SKILLS CHECKLIST — CRITICAL:
+  Extract every skill/requirement as a structured object with exactly these fields:
+    "skill"  — the requirement text, clean and candidate-facing
+    "level"  — MUST be exactly one of: "Required", "Highly desired", "Desired"
+    "years"  — experience amount as a string e.g. "2 Years", "1 Year"
+              — use "" (empty string) when no years are mentioned
+
+  The skills table in the source document has columns: Skill | Required/Desired | Years.
+  Map each row exactly. Preserve the years value when present.
+  Do NOT flatten into plain strings.
 
 WARNINGS:
   - Add a warning string for any field that was missing, ambiguous, or conflicted
@@ -53,7 +71,9 @@ Return exactly this JSON schema with no extra keys:
   "engagement_type": "",
   "position_description": "",
   "duties": [],
-  "skills_checklist": [],
+  "skills_checklist": [
+    { "skill": "", "level": "Required", "years": "" }
+  ],
   "warnings": []
 }`
 
